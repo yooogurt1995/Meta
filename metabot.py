@@ -21,6 +21,9 @@ router = Router()
 # User data storage (mock database)
 user_data = {}
 
+# Maximum daily attempts
+MAX_ATTEMPTS = 5
+
 # Define keyboards
 main_menu = ReplyKeyboardMarkup(
     keyboard=[
@@ -49,7 +52,11 @@ def get_random_card_images(count=1):
 # Helper function to initialize user data
 def initialize_user_data(user_id):
     if user_id not in user_data:
-        user_data[user_id] = {'daily_count': 0, 'last_reset': datetime.date.today()}
+        user_data[user_id] = {
+            'daily_count': 0,
+            'last_reset': datetime.date.today(),
+            'custom_limit': None
+        }
 
 # Command handlers
 @router.message(Command(commands=['start']))
@@ -82,25 +89,22 @@ async def get_card_instruction(message: types.Message):
 async def send_single_card(callback_query: types.CallbackQuery):
     user_id = callback_query.from_user.id
     initialize_user_data(user_id)
+    user_limit = user_data[user_id].get('custom_limit', MAX_ATTEMPTS)
+
+    if user_data[user_id]['daily_count'] >= user_limit:
+        await bot.send_message(user_id, "Ваш лимит попыток на сегодня исчерпан. Возвращайтесь завтра!")
+        await bot.answer_callback_query(callback_query.id)
+        return
+
+    user_data[user_id]['daily_count'] += 1
+
     try:
         card_image = get_random_card_images(1)[0]
         image_path = os.path.join(CARD_IMAGES_PATH, card_image)
         await bot.send_photo(user_id, photo=FSInputFile(image_path), caption="\U0001F4C4 Ваша карта")
-        button = InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="Я закончил работу с картой", callback_data="end_card_analysis")]]
-        )
-        await bot.send_message(user_id, "Когда проанализируете карту, нажмите на кнопку ниже:", reply_markup=button)
     except FileNotFoundError:
         await bot.send_message(user_id, "Ошибка: не найдены изображения карт. Пожалуйста, добавьте их в папку.")
-    await bot.answer_callback_query(callback_query.id)
 
-@router.callback_query(lambda c: c.data == "end_card_analysis")
-async def end_card_analysis(callback_query: types.CallbackQuery):
-    user_id = callback_query.from_user.id
-    initialize_user_data(user_id)
-    daily_left = max(0, 10 - user_data[user_id]['daily_count'])
-    user_data[user_id]['daily_count'] += 1
-    await bot.send_message(user_id, f"Спасибо за анализ карты. Возвращайтесь, чтобы получить новые ответы! Осталось попыток: {daily_left}", reply_markup=main_menu)
     await bot.answer_callback_query(callback_query.id)
 
 @router.message(lambda message: message.text == "Анализ прошлое-настоящее")
@@ -120,80 +124,35 @@ async def analysis_instruction_1(message: types.Message):
 async def analysis_past(callback_query: types.CallbackQuery):
     user_id = callback_query.from_user.id
     initialize_user_data(user_id)
+    user_limit = user_data[user_id].get('custom_limit', MAX_ATTEMPTS)
+
+    if user_data[user_id]['daily_count'] >= user_limit:
+        await bot.send_message(user_id, "Ваш лимит попыток на сегодня исчерпан. Возвращайтесь завтра!")
+        await bot.answer_callback_query(callback_query.id)
+        return
+
+    user_data[user_id]['daily_count'] += 1
+
     try:
         card_image = get_random_card_images(1)[0]
         image_path = os.path.join(CARD_IMAGES_PATH, card_image)
         await bot.send_photo(user_id, photo=FSInputFile(image_path), caption="\U0001F4C4 Карта: Прошлое")
-        button = InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="Я закончил работу с картой", callback_data="continue_to_present")]]
-        )
-        await bot.send_message(user_id, "Когда проанализируете карту, нажмите на кнопку ниже:", reply_markup=button)
     except FileNotFoundError:
         await bot.send_message(user_id, "Ошибка: не найдены изображения карт. Пожалуйста, добавьте их в папку.")
+
     await bot.answer_callback_query(callback_query.id)
 
-@router.callback_query(lambda c: c.data == "continue_to_present")
-async def continue_to_present(callback_query: types.CallbackQuery):
-    user_id = callback_query.from_user.id
-    initialize_user_data(user_id)
-    next_instruction = (
-        "2️⃣ А теперь подумай о настоящем. Создай намерение узнать, чего тебе действительно сейчас не хватает.\n"
-        "Сделай глубокий вдох, настройся, и когда будешь готов/а нажми на кнопку ниже."
-    )
-    button = InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="Получить карту", callback_data="analysis_present")]]
-    )
-    await bot.send_message(user_id, next_instruction, reply_markup=button)
-    await bot.answer_callback_query(callback_query.id)
-
-@router.callback_query(lambda c: c.data == "analysis_present")
-async def analysis_present(callback_query: types.CallbackQuery):
-    user_id = callback_query.from_user.id
-    initialize_user_data(user_id)
+@router.message(Command(commands=['set_limit']))
+async def set_custom_limit(message: types.Message):
     try:
-        card_image = get_random_card_images(1)[0]
-        image_path = os.path.join(CARD_IMAGES_PATH, card_image)
-        await bot.send_photo(user_id, photo=FSInputFile(image_path), caption="\U0001F4C4 Карта: Настоящее")
-        button = InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="Я закончил работу с картой", callback_data="end_analysis")]]
-        )
-        await bot.send_message(user_id, "Когда проанализируете карту, нажмите на кнопку ниже:", reply_markup=button)
-    except FileNotFoundError:
-        await bot.send_message(user_id, "Ошибка: не найдены изображения карт. Пожалуйста, добавьте их в папку.")
-    await bot.answer_callback_query(callback_query.id)
-
-@router.callback_query(lambda c: c.data == "end_analysis")
-async def end_analysis(callback_query: types.CallbackQuery):
-    user_id = callback_query.from_user.id
-    initialize_user_data(user_id)
-    daily_left = max(0, 10 - user_data[user_id]['daily_count'])
-    user_data[user_id]['daily_count'] += 1
-    await bot.send_message(user_id, f"Спасибо! Осталось попыток: {daily_left}", reply_markup=main_menu)
-    await bot.answer_callback_query(callback_query.id)
-
-@router.message(lambda message: message.text == "\u2728 О картах")
-async def about_cards(message: types.Message):
-    await message.answer(
-        "\U0001F4DA Как использовать метафорические карты:\n"
-        "1️⃣ Задумайтесь над вопросом, на который хотите узнать ответ\n"
-        "2️⃣ Выберите расклад\n"
-        "3️⃣ Откройте одну или несколько карт\n"
-        "4️⃣ Анализируйте свои внутренние ассоциации\n\n"
-        "\U0001F4AC Что такое метафорические карты:\n"
-        "Метафорические карты — это инструмент для самопознания и анализа. Они помогают взглянуть на ситуацию с нового ракурса, раскрывают скрытые ассоциации и дают возможность найти ответы на волнующие вопросы.\n"
-        "\U0001F4D6 Используйте их для исследования своих мыслей, эмоций и принятия решений."
-    )
-
-@router.message(lambda message: message.text == "\u2753 Задать вопрос тарологу")
-async def ask_tarologist(message: types.Message):
-    await message.answer("Перейдите в чат с тарологом, нажав на ссылку: @alyona_venger")
-
-@router.message(lambda message: message.text == "\u2605 Мой тариф")
-async def my_tariff(message: types.Message):
-    user_id = message.from_user.id
-    initialize_user_data(user_id)
-    daily_left = max(0, 10 - user_data[user_id]['daily_count'])
-    await message.answer(f"Ваш текущий тариф: Бесплатный\nОсталось попыток: {daily_left}\n\nОформите подписку для неограниченного доступа.")
+        user_id, limit = map(int, message.text.split()[1:])
+        if user_id in user_data:
+            user_data[user_id]['custom_limit'] = limit
+            await message.reply(f"Персональный лимит для пользователя {user_id} установлен на {limit} попыток.")
+        else:
+            await message.reply("Пользователь не найден.")
+    except (ValueError, IndexError):
+        await message.reply("Используйте: /set_limit <user_id> <limit>")
 
 # Start the bot
 async def main():
