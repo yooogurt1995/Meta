@@ -6,6 +6,9 @@ import datetime
 import asyncio
 import logging
 import os
+import sqlite3
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 
 # Replace with your actual Telegram bot token
 API_TOKEN = '7854106709:AAHeIIyM3aUH8cxzIX68MgOxzA-XgKQ4-r0'
@@ -17,9 +20,62 @@ logging.basicConfig(level=logging.INFO)
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
 router = Router()
+scheduler = AsyncIOScheduler()
 
-# User data storage (mock database)
-user_data = {}
+# Database setup
+db_path = "bot_users.db"
+
+def init_db():
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute('''CREATE TABLE IF NOT EXISTS users (
+                        user_id INTEGER PRIMARY KEY,
+                        daily_count INTEGER DEFAULT 0,
+                        last_reset TEXT
+                      )''')
+    conn.commit()
+    conn.close()
+
+init_db()
+
+def add_username_column():
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    # Проверяем, существует ли столбец username
+    cursor.execute("PRAGMA table_info(users)")
+    columns = [info[1] for info in cursor.fetchall()]
+    if "username" not in columns:
+        cursor.execute("ALTER TABLE users ADD COLUMN username TEXT")
+        conn.commit()
+    conn.close()
+
+# Вызовите эту функцию один раз при запуске
+add_username_column()
+
+def get_user_data(user_id):
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute("SELECT daily_count, last_reset FROM users WHERE user_id = ?", (user_id,))
+    result = cursor.fetchone()
+    conn.close()
+    return result
+
+def set_user_data(user_id, daily_count, last_reset, username=None):
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute(
+        "REPLACE INTO users (user_id, daily_count, last_reset, username) VALUES (?, ?, ?, ?)",
+        (user_id, daily_count, last_reset, username)
+    )
+    conn.commit()
+    conn.close()
+
+def reset_user_attempts():
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE users SET daily_count = 0, last_reset = ?", (datetime.datetime.now().isoformat(),))
+    conn.commit()
+    conn.close()
 
 # Maximum daily attempts
 MAX_ATTEMPTS = 5
@@ -28,7 +84,6 @@ MAX_ATTEMPTS = 5
 main_menu = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="Получить карту")],
-        [KeyboardButton(text="Анализ прошлое-настоящее")],
         [KeyboardButton(text="\u2728 О картах"), KeyboardButton(text="\u2753 Задать вопрос тарологу")],
         [KeyboardButton(text="\u2605 Мой тариф")]
     ],
@@ -49,20 +104,36 @@ def get_random_card_images(count=1):
         raise FileNotFoundError("No card images found in the directory.")
     return random.sample(images, count)
 
-# Helper function to initialize user data
-def initialize_user_data(user_id):
-    if user_id not in user_data:
-        user_data[user_id] = {
-            'daily_count': 0,
-            'last_reset': datetime.date.today(),
-            'custom_limit': None
-        }
+# Function to send the daily card
+async def send_daily_card():
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id FROM users")
+    users = cursor.fetchall()
+    conn.close()
+
+    for user_id, in users:
+        try:
+            card_image = get_random_card_images(1)[0]
+            image_path = os.path.join(CARD_IMAGES_PATH, card_image)
+            await bot.send_photo(user_id, photo=FSInputFile(image_path), caption="Доброе утро! Это твоя карта дня:")
+        except FileNotFoundError:
+            logging.error("No card images found. Cannot send daily card.")
 
 # Command handlers
 @router.message(Command(commands=['start']))
 async def send_welcome(message: types.Message):
     user_id = message.from_user.id
-    initialize_user_data(user_id)
+    username = message.from_user.username or "не указан"
+    user_data = get_user_data(user_id)
+
+    if user_data:
+        # Обновляем только username, если пользователь уже зарегистрирован
+        set_user_data(user_id, user_data[0], user_data[1], username)
+    else:
+        # Создаём новую запись, если пользователь не найден
+        set_user_data(user_id, 0, datetime.datetime.now().isoformat(), username)
+    
     welcome_text = (
         "Привет! Добро пожаловать в уникальный бот с МАК картами от Алены Венгер ✨\n"
         "Здесь ты откроешь для себя огромный мир самопознания, где найдешь ответы на все свои вопросы 🥰\n\n"
@@ -71,10 +142,125 @@ async def send_welcome(message: types.Message):
     )
     await message.answer(welcome_text, reply_markup=main_menu)
 
+@router.message(Command(commands=['last_user']))
+async def get_last_user(message: types.Message):
+    # Проверяем, что сообщение от администратора
+    admin_id = 327308286  # Ваш Telegram ID
+    if message.from_user.id != admin_id:
+        await message.answer("У вас нет прав для выполнения этой команды.")
+        return
+
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id FROM users ORDER BY rowid DESC LIMIT 1")
+    result = cursor.fetchone()
+    conn.close()
+
+    if result:
+        await message.answer(f"Последний зарегистрированный пользователь: {result[0]}")
+    else:
+        await message.answer("Нет зарегистрированных пользователей.")
+
+@router.message(Command(commands=['set_attempts']))
+async def set_attempts(message: types.Message):
+    admin_id = 327308286  # Ваш Telegram ID
+    if message.from_user.id != admin_id:
+        await message.answer("У вас нет прав для выполнения этой команды.")
+        return
+
+    try:
+        _, user_id, attempts = message.text.split()
+        user_id = int(user_id)
+        attempts = int(attempts)
+
+        user_data = get_user_data(user_id)
+        if user_data:
+            # Обновляем daily_count
+            last_reset = user_data[1]
+            set_user_data(user_id, MAX_ATTEMPTS - attempts, last_reset)
+            await message.answer(f"Установлено {attempts} попыток для пользователя {user_id}. Осталось: {attempts}.")
+        else:
+            await message.answer(f"Пользователь с ID {user_id} не найден.")
+    except ValueError:
+        await message.answer("Используйте команду в формате: /set_attempts user_id attempts")
+
+@router.message(Command(commands=['update_usernames']))
+async def update_usernames(message: types.Message):
+    admin_id = 327308286  # Ваш Telegram ID
+    if message.from_user.id != admin_id:
+        await message.answer("У вас нет прав для выполнения этой команды.")
+        return
+
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id FROM users")
+    users = cursor.fetchall()
+
+    updated_count = 0
+    for user_id, in users:
+        user = await bot.get_chat(user_id)
+        username = user.username or "не указан"
+        cursor.execute("UPDATE users SET username = ? WHERE user_id = ?", (username, user_id))
+        updated_count += 1
+
+    conn.commit()
+    conn.close()
+
+    await message.answer(f"Обновлено никнеймов для {updated_count} пользователей.")
+
+@router.message(Command(commands=['user_count']))
+async def user_count(message: types.Message):
+    admin_id = 327308286  # Ваш Telegram ID
+    if message.from_user.id != admin_id:
+        await message.answer("У вас нет прав для выполнения этой команды.")
+        return
+
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM users")
+    count = cursor.fetchone()[0]
+    conn.close()
+
+    await message.answer(f"Количество пользователей бота: {count}")
+
+@router.message(Command(commands=['list_users']))
+async def list_users(message: types.Message):
+    admin_id = 327308286  # Ваш Telegram ID
+    if message.from_user.id != admin_id:
+        await message.answer("У вас нет прав для выполнения этой команды.")
+        return
+
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id, username FROM users")
+    users = cursor.fetchall()
+    conn.close()
+
+    if users:
+        user_list = "\n".join([f"ID: {user[0]}, Username: @{user[1] or 'не указан'}" for user in users])
+        await message.answer(f"Список пользователей:\n{user_list}")
+    else:
+        await message.answer("В базе данных пока нет пользователей.")
+
 @router.message(lambda message: message.text == "Получить карту")
 async def get_card_instruction(message: types.Message):
     user_id = message.from_user.id
-    initialize_user_data(user_id)
+    user_data = get_user_data(user_id)
+    if not user_data:
+        set_user_data(user_id, 0, datetime.datetime.now().isoformat())
+        user_data = (0, datetime.datetime.now().isoformat())
+
+    daily_count, last_reset = user_data
+    last_reset_time = datetime.datetime.fromisoformat(last_reset)
+    if (datetime.datetime.now() - last_reset_time).total_seconds() >= 86400:
+        daily_count = 0
+        last_reset_time = datetime.datetime.now()
+        set_user_data(user_id, daily_count, last_reset_time.isoformat())
+
+    if daily_count >= MAX_ATTEMPTS:
+        await message.answer("Ваш лимит попыток на сегодня исчерпан. Возвращайтесь завтра!")
+        return
+
     instruction = (
         "\U0001F4DA Как использовать карту:\n"
         "1️⃣ Задумайтесь над вопросом, на который хотите узнать ответ.\n"
@@ -85,78 +271,90 @@ async def get_card_instruction(message: types.Message):
     )
     await message.answer(instruction, reply_markup=button)
 
+@router.message(lambda message: message.text == "\u2728 О картах")
+async def about_cards(message: types.Message):
+    about_text = (
+        "✨ О метафорических картах:\n"
+        "Метафорические ассоциативные карты (МАК) — это инструмент для самопознания, позволяющий разобраться в своих эмоциях и мыслях.\n"
+        "Карты не имеют фиксированных значений, а их интерпретация полностью зависит от вашего подсознания."
+    )
+    await message.answer(about_text)
+    
+@router.message(lambda message: message.text == "\u2753 Задать вопрос тарологу")
+async def ask_tarologist(message: types.Message):
+    await message.answer("Перейдите в чат с тарологом, нажав на ссылку: @alyona_venger")
+
+@router.message(lambda message: message.text == "\u2605 Мой тариф")
+async def my_tariff(message: types.Message):
+    user_id = message.from_user.id
+    user_data = get_user_data(user_id)
+    if user_data:
+        daily_count, last_reset = user_data
+        remaining_attempts = max(0, MAX_ATTEMPTS - daily_count)
+        await message.answer(f"★ Ваш тариф:\nОсталось попыток: {remaining_attempts}.")
+    else:
+        await message.answer("Вы еще не зарегистрированы.")
+
+
+
 @router.callback_query(lambda c: c.data == "get_single_card")
 async def send_single_card(callback_query: types.CallbackQuery):
     user_id = callback_query.from_user.id
-    initialize_user_data(user_id)
-    user_limit = user_data[user_id].get('custom_limit', MAX_ATTEMPTS)
+    user_data = get_user_data(user_id)
+    if not user_data:
+        set_user_data(user_id, 0, datetime.datetime.now().isoformat())
+        user_data = (0, datetime.datetime.now().isoformat())
 
-    if user_data[user_id]['daily_count'] >= user_limit:
+    daily_count, last_reset = user_data
+    last_reset_time = datetime.datetime.fromisoformat(last_reset)
+    if (datetime.datetime.now() - last_reset_time).total_seconds() >= 86400:
+        daily_count = 0
+        last_reset_time = datetime.datetime.now()
+
+    if daily_count >= MAX_ATTEMPTS:
         await bot.send_message(user_id, "Ваш лимит попыток на сегодня исчерпан. Возвращайтесь завтра!")
         await bot.answer_callback_query(callback_query.id)
         return
 
-    user_data[user_id]['daily_count'] += 1
+    daily_count += 1
+    set_user_data(user_id, daily_count, last_reset_time.isoformat())
+
+    remaining_attempts = max(0, MAX_ATTEMPTS - daily_count)
 
     try:
         card_image = get_random_card_images(1)[0]
         image_path = os.path.join(CARD_IMAGES_PATH, card_image)
-        await bot.send_photo(user_id, photo=FSInputFile(image_path), caption="\U0001F4C4 Ваша карта")
+        await bot.send_photo(user_id, photo=FSInputFile(image_path), caption=f"\U0001F4C4 Ваша карта. Осталось попыток: {remaining_attempts}.")
+        mini_instruction = (
+            "Внимательно посмотрите на карту, что вы на ней видите? Какой ответ вам приходит в голову? "
+            "Не торопитесь, тщательно рассмотрите картинку и нужная вам мысль обязательно придет."
+        )
+        button = InlineKeyboardMarkup(
+            inline_keyboard=[[InlineKeyboardButton(text="Я закончил работу с картой", callback_data="end_single_card")]]
+        )
+        await bot.send_message(user_id, mini_instruction, reply_markup=button)
     except FileNotFoundError:
         await bot.send_message(user_id, "Ошибка: не найдены изображения карт. Пожалуйста, добавьте их в папку.")
 
     await bot.answer_callback_query(callback_query.id)
 
-@router.message(lambda message: message.text == "Анализ прошлое-настоящее")
-async def analysis_instruction_1(message: types.Message):
-    user_id = message.from_user.id
-    initialize_user_data(user_id)
-    instruction = (
-        "1️⃣ Сделай глубокий вдох, можно закрыть глаза. Подумай о вопросе или ситуации, которая тебя волнует.\n"
-        "Когда почувствуешь, что готов/а, нажимай на кнопку ниже, чтобы получить карту."
-    )
-    button = InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="Получить карту", callback_data="analysis_past")]]
-    )
-    await message.answer(instruction, reply_markup=button)
-
-@router.callback_query(lambda c: c.data == "analysis_past")
-async def analysis_past(callback_query: types.CallbackQuery):
+@router.callback_query(lambda c: c.data == "end_single_card")
+async def end_single_card(callback_query: types.CallbackQuery):
     user_id = callback_query.from_user.id
-    initialize_user_data(user_id)
-    user_limit = user_data[user_id].get('custom_limit', MAX_ATTEMPTS)
-
-    if user_data[user_id]['daily_count'] >= user_limit:
-        await bot.send_message(user_id, "Ваш лимит попыток на сегодня исчерпан. Возвращайтесь завтра!")
-        await bot.answer_callback_query(callback_query.id)
-        return
-
-    user_data[user_id]['daily_count'] += 1
-
-    try:
-        card_image = get_random_card_images(1)[0]
-        image_path = os.path.join(CARD_IMAGES_PATH, card_image)
-        await bot.send_photo(user_id, photo=FSInputFile(image_path), caption="\U0001F4C4 Карта: Прошлое")
-    except FileNotFoundError:
-        await bot.send_message(user_id, "Ошибка: не найдены изображения карт. Пожалуйста, добавьте их в папку.")
-
+    user_data = get_user_data(user_id)
+    daily_count = user_data[0] if user_data else 0
+    remaining_attempts = max(0, MAX_ATTEMPTS - daily_count)
+    await bot.send_message(user_id, f"Спасибо! Осталось попыток: {remaining_attempts}")
     await bot.answer_callback_query(callback_query.id)
-
-@router.message(Command(commands=['set_limit']))
-async def set_custom_limit(message: types.Message):
-    try:
-        user_id, limit = map(int, message.text.split()[1:])
-        if user_id in user_data:
-            user_data[user_id]['custom_limit'] = limit
-            await message.reply(f"Персональный лимит для пользователя {user_id} установлен на {limit} попыток.")
-        else:
-            await message.reply("Пользователь не найден.")
-    except (ValueError, IndexError):
-        await message.reply("Используйте: /set_limit <user_id> <limit>")
 
 # Start the bot
 async def main():
     dp.include_router(router)
+
+    # Schedule the daily card sending at 09:00 Moscow time
+    scheduler.add_job(send_daily_card, CronTrigger(hour=9, minute=0, timezone="Europe/Moscow"))
+    scheduler.start()
+
     await dp.start_polling(bot)
 
 if __name__ == '__main__':
