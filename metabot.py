@@ -73,7 +73,14 @@ def set_user_data(user_id, daily_count, last_reset, username=None):
 def reset_user_attempts():
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
-    cursor.execute("UPDATE users SET daily_count = 0, last_reset = ?", (datetime.datetime.now().isoformat(),))
+
+    # Сбрасываем попытки только для пользователей с лимитом, равным стандартному
+    cursor.execute("""
+        UPDATE users 
+        SET daily_count = 0, last_reset = ?
+        WHERE daily_count <= ?
+    """, (datetime.datetime.now().isoformat(), MAX_ATTEMPTS))
+
     conn.commit()
     conn.close()
 
@@ -108,15 +115,20 @@ def get_random_card_images(count=1):
 async def send_daily_card():
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
-    cursor.execute("SELECT user_id FROM users")
+    cursor.execute("SELECT user_id, username FROM users")
     users = cursor.fetchall()
     conn.close()
 
-    for user_id, in users:
+    for user_id, username in users:
         try:
+            first_name = username or "друг"
             card_image = get_random_card_images(1)[0]
             image_path = os.path.join(CARD_IMAGES_PATH, card_image)
-            await bot.send_photo(user_id, photo=FSInputFile(image_path), caption="Доброе утро! Это твоя карта дня:")
+            await bot.send_photo(
+                user_id,
+                photo=FSInputFile(image_path),
+                caption=f"Доброе утро, {first_name}! Это твоя карта дня:"
+            )
         except FileNotFoundError:
             logging.error("No card images found. Cannot send daily card.")
 
@@ -134,12 +146,12 @@ async def send_welcome(message: types.Message):
         # Создаём новую запись, если пользователь не найден
         set_user_data(user_id, 0, datetime.datetime.now().isoformat(), username)
     
-    welcome_text = (
-        "Привет! Добро пожаловать в уникальный бот с МАК картами от Алены Венгер ✨\n"
-        "Здесь ты откроешь для себя огромный мир самопознания, где найдешь ответы на все свои вопросы 🥰\n\n"
-        "МАК карты - метафорические карты, с помощью которых ты можешь заглянуть в свое подсознание без психологов и других специалистов.\n"
-        "Можешь достать любую информацию, принять важное решение или провести самокоучинг."
-    )
+welcome_text = (
+    f"{message.from_user.first_name}, привет! Добро пожаловать в уникальный бот с МАК картами от Алены Венгер ✨\n"
+    "Здесь ты откроешь для себя огромный мир самопознания, где найдешь ответы на все свои вопросы 🥰\n\n"
+    "МАК карты - метафорические карты, с помощью которых ты можешь заглянуть в свое подсознание без психологов и других специалистов.\n"
+    "Можешь достать любую информацию, принять важное решение или провести самокоучинг."
+)
     await message.answer(welcome_text, reply_markup=main_menu)
 
 @router.message(Command(commands=['last_user']))
@@ -242,6 +254,34 @@ async def list_users(message: types.Message):
     else:
         await message.answer("В базе данных пока нет пользователей.")
 
+@router.message(Command(commands=['broadcast']))
+async def broadcast(message: types.Message):
+    admin_id = 327308286  # Ваш Telegram ID
+    if message.from_user.id != admin_id:
+        await message.answer("У вас нет прав для выполнения этой команды.")
+        return
+
+    if len(message.text.split()) < 2:
+        await message.answer("Пожалуйста, укажите текст сообщения после команды. Например:\n/broadcast Ваш текст")
+        return
+
+    text = message.text.split(" ", 1)[1]
+
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id FROM users")
+    users = cursor.fetchall()
+    conn.close()
+
+    for user_id, in users:
+        try:
+            await bot.send_message(user_id, text)
+            await asyncio.sleep(0.1)  # Задержка для предотвращения блокировок
+        except Exception as e:
+            logging.error(f"Ошибка отправки пользователю {user_id}: {e}")
+
+    await message.answer("Сообщение отправлено всем пользователям.")
+
 @router.message(lambda message: message.text == "Получить карту")
 async def get_card_instruction(message: types.Message):
     user_id = message.from_user.id
@@ -290,7 +330,9 @@ async def my_tariff(message: types.Message):
     user_data = get_user_data(user_id)
     if user_data:
         daily_count, last_reset = user_data
-        remaining_attempts = max(0, MAX_ATTEMPTS - daily_count)
+        # Определяем текущий лимит пользователя
+        user_limit = MAX_ATTEMPTS if daily_count <= MAX_ATTEMPTS else daily_count
+        remaining_attempts = max(0, user_limit - daily_count)
         await message.answer(f"★ Ваш тариф:\nОсталось попыток: {remaining_attempts}.")
     else:
         await message.answer("Вы еще не зарегистрированы.")
@@ -307,11 +349,16 @@ async def send_single_card(callback_query: types.CallbackQuery):
 
     daily_count, last_reset = user_data
     last_reset_time = datetime.datetime.fromisoformat(last_reset)
-    if (datetime.datetime.now() - last_reset_time).total_seconds() >= 86400:
+
+    # Проверяем, нужно ли сбрасывать попытки
+    if (datetime.datetime.now() - last_reset_time).total_seconds() >= 86400 and daily_count <= MAX_ATTEMPTS:
         daily_count = 0
         last_reset_time = datetime.datetime.now()
 
-    if daily_count >= MAX_ATTEMPTS:
+    # Получаем текущий лимит попыток
+    user_limit = MAX_ATTEMPTS if daily_count <= MAX_ATTEMPTS else daily_count
+
+    if daily_count >= user_limit:
         await bot.send_message(user_id, "Ваш лимит попыток на сегодня исчерпан. Возвращайтесь завтра!")
         await bot.answer_callback_query(callback_query.id)
         return
@@ -319,12 +366,16 @@ async def send_single_card(callback_query: types.CallbackQuery):
     daily_count += 1
     set_user_data(user_id, daily_count, last_reset_time.isoformat())
 
-    remaining_attempts = max(0, MAX_ATTEMPTS - daily_count)
+    remaining_attempts = max(0, user_limit - daily_count)
 
     try:
         card_image = get_random_card_images(1)[0]
         image_path = os.path.join(CARD_IMAGES_PATH, card_image)
-        await bot.send_photo(user_id, photo=FSInputFile(image_path), caption=f"\U0001F4C4 Ваша карта. Осталось попыток: {remaining_attempts}.")
+        await bot.send_photo(
+            user_id,
+            photo=FSInputFile(image_path),
+            caption=f"\U0001F4C4 Ваша карта. Осталось попыток: {remaining_attempts}."
+        )
         mini_instruction = (
             "Внимательно посмотрите на карту, что вы на ней видите? Какой ответ вам приходит в голову? "
             "Не торопитесь, тщательно рассмотрите картинку и нужная вам мысль обязательно придет."
@@ -341,10 +392,38 @@ async def send_single_card(callback_query: types.CallbackQuery):
 @router.callback_query(lambda c: c.data == "end_single_card")
 async def end_single_card(callback_query: types.CallbackQuery):
     user_id = callback_query.from_user.id
+    first_name = callback_query.from_user.first_name or "друг"
     user_data = get_user_data(user_id)
     daily_count = user_data[0] if user_data else 0
     remaining_attempts = max(0, MAX_ATTEMPTS - daily_count)
-    await bot.send_message(user_id, f"Спасибо! Осталось попыток: {remaining_attempts}")
+
+    question_text = (
+        f"{first_name}, удалось ли получить ответ на свой запрос?"
+    )
+    buttons = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="Да", callback_data="response_yes")],
+            [InlineKeyboardButton(text="Нет", callback_data="response_no")]
+        ]
+    )
+    await bot.send_message(user_id, question_text, reply_markup=buttons)
+    await bot.answer_callback_query(callback_query.id)
+
+@router.callback_query(lambda c: c.data == "response_yes")
+async def response_yes(callback_query: types.CallbackQuery):
+    user_id = callback_query.from_user.id
+    user_data = get_user_data(user_id)
+    daily_count = user_data[0] if user_data else 0
+    remaining_attempts = max(0, MAX_ATTEMPTS - daily_count)
+    await bot.send_message(user_id, f"Замечательно! Осталось попыток: {remaining_attempts}")
+    await bot.answer_callback_query(callback_query.id)
+
+@router.callback_query(lambda c: c.data == "response_no")
+async def response_no(callback_query: types.CallbackQuery):
+    await bot.send_message(
+        callback_query.from_user.id,
+        "Не расстраивайся, напиши свой вопрос тарологу @alyona_venger, Алёна точно сможет помочь тебе."
+    )
     await bot.answer_callback_query(callback_query.id)
 
 # Start the bot
