@@ -74,12 +74,12 @@ def reset_user_attempts():
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
 
-    # Сбрасываем попытки только для пользователей с лимитом, равным стандартному
+    # Сбрасываем только для пользователей с попытками <= MAX_ATTEMPTS и прошло 24 часа
     cursor.execute("""
         UPDATE users 
         SET daily_count = 0, last_reset = ?
-        WHERE daily_count <= ?
-    """, (datetime.datetime.now().isoformat(), MAX_ATTEMPTS))
+        WHERE daily_count <= ? AND (julianday(?) - julianday(last_reset)) >= 1
+    """, (datetime.datetime.now().isoformat(), MAX_ATTEMPTS, datetime.datetime.now().isoformat()))
 
     conn.commit()
     conn.close()
