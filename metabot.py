@@ -152,7 +152,7 @@ welcome_text = (
     "МАК карты - метафорические карты, с помощью которых ты можешь заглянуть в свое подсознание без психологов и других специалистов.\n"
     "Можешь достать любую информацию, принять важное решение или провести самокоучинг."
 )
-       await message.answer(welcome_text, reply_markup=main_menu)
+await message.answer(welcome_text, reply_markup=main_menu)
 
 @router.message(Command(commands=['last_user']))
 async def get_last_user(message: types.Message):
@@ -438,4 +438,3 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
-
