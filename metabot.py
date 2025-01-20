@@ -49,7 +49,7 @@ def add_username_column():
         conn.commit()
     conn.close()
 
-  def add_first_name_column():
+def add_first_name_column():
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     cursor.execute("PRAGMA table_info(users)")
