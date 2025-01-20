@@ -49,6 +49,18 @@ def add_username_column():
         conn.commit()
     conn.close()
 
+  def add_first_name_column():
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA table_info(users)")
+    columns = [info[1] for info in cursor.fetchall()]
+    if "first_name" not in columns:
+        cursor.execute("ALTER TABLE users ADD COLUMN first_name TEXT")
+        conn.commit()
+    conn.close()
+
+add_first_name_column()
+
 # Вызовите эту функцию один раз при запуске
 add_username_column()
 
@@ -60,12 +72,20 @@ def get_user_data(user_id):
     conn.close()
     return result
 
-def set_user_data(user_id, daily_count, last_reset, username=None):
+def set_user_data(user_id, daily_count, last_reset, username=None, first_name=None):
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     cursor.execute(
-        "REPLACE INTO users (user_id, daily_count, last_reset, username) VALUES (?, ?, ?, ?)",
-        (user_id, daily_count, last_reset, username)
+        """
+        INSERT INTO users (user_id, daily_count, last_reset, username, first_name)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(user_id) DO UPDATE SET
+        daily_count = excluded.daily_count,
+        last_reset = excluded.last_reset,
+        username = COALESCE(excluded.username, username),
+        first_name = COALESCE(excluded.first_name, first_name)
+        """,
+        (user_id, daily_count, last_reset, username, first_name)
     )
     conn.commit()
     conn.close()
@@ -121,7 +141,7 @@ async def send_daily_card():
 
     for user_id, username in users:
         try:
-            first_name = callback_query.from_user.first_name or "друг"  # Убедитесь, что используете first_name
+            first_name = username or "друг"
             card_image = get_random_card_images(1)[0]
             image_path = os.path.join(CARD_IMAGES_PATH, card_image)
             await bot.send_photo(
@@ -131,27 +151,29 @@ async def send_daily_card():
             )
         except FileNotFoundError:
             logging.error("No card images found. Cannot send daily card.")
+        except Exception as e:
+            logging.error(f"Ошибка отправки карты пользователю {user_id}: {e}")
 
 # Command handlers
 @router.message(Command(commands=['start']))
 async def send_welcome(message: types.Message):
     user_id = message.from_user.id
     username = message.from_user.username or "не указан"
+    first_name = message.from_user.first_name or "друг"
     user_data = get_user_data(user_id)
 
     if user_data:
-        set_user_data(user_id, user_data[0], user_data[1], username)
+        set_user_data(user_id, user_data[0], user_data[1], username, first_name)
     else:
-        set_user_data(user_id, 0, datetime.datetime.now().isoformat(), username)
+        set_user_data(user_id, 0, datetime.datetime.now().isoformat(), username, first_name)
 
     welcome_text = (
-        f"{message.from_user.first_name}, привет! Добро пожаловать в уникальный бот с МАК картами от Алены Венгер ✨\n"
+        f"{first_name}, привет! Добро пожаловать в уникальный бот с МАК картами от Алены Венгер ✨\n"
         "Здесь ты откроешь для себя огромный мир самопознания, где найдешь ответы на все свои вопросы 🥰\n\n"
         "МАК карты - метафорические карты, с помощью которых ты можешь заглянуть в свое подсознание без психологов и других специалистов.\n"
         "Можешь достать любую информацию, принять важное решение или провести самокоучинг."
     )
     await message.answer(welcome_text, reply_markup=main_menu)
-
 
 @router.message(Command(commands=['last_user']))
 async def get_last_user(message: types.Message):
@@ -424,6 +446,16 @@ async def response_no(callback_query: types.CallbackQuery):
         "Не расстраивайся, напиши свой вопрос тарологу @alyona_venger, Алёна точно сможет помочь тебе."
     )
     await bot.answer_callback_query(callback_query.id)
+  
+@router.message(Command(commands=['test_daily']))
+async def test_daily(message: types.Message):
+    admin_id = 327308286  # Ваш Telegram ID
+    if message.from_user.id != admin_id:
+        await message.answer("У вас нет прав для выполнения этой команды.")
+        return
+
+    await send_daily_card()
+    await message.answer("Ежедневная рассылка протестирована.")
 
 # Start the bot
 async def main():
@@ -437,3 +469,4 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
+
