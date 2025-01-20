@@ -98,7 +98,7 @@ def reset_user_attempts():
     cursor.execute("""
         UPDATE users 
         SET daily_count = 0, last_reset = ?
-        WHERE daily_count <= ? AND (julianday(?) - julianday(last_reset)) >= 1
+        WHERE (daily_count <= ? OR daily_count IS NULL) AND (julianday(?) - julianday(last_reset)) >= 1
     """, (datetime.datetime.now().isoformat(), MAX_ATTEMPTS, datetime.datetime.now().isoformat()))
 
     conn.commit()
@@ -135,19 +135,19 @@ def get_random_card_images(count=1):
 async def send_daily_card():
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
-    cursor.execute("SELECT user_id, username FROM users")
+    cursor.execute("SELECT user_id, username, first_name FROM users")
     users = cursor.fetchall()
     conn.close()
 
-    for user_id, username in users:
+    for user_id, username, first_name in users:
         try:
-            first_name = username or "друг"
+            display_name = first_name or username or "друг"  # Используйте first_name в первую очередь
             card_image = get_random_card_images(1)[0]
             image_path = os.path.join(CARD_IMAGES_PATH, card_image)
             await bot.send_photo(
                 user_id,
                 photo=FSInputFile(image_path),
-                caption=f"Доброе утро, {first_name}! Это твоя карта дня:"
+                caption=f"Доброе утро, {display_name}! Это твоя карта дня:"
             )
         except FileNotFoundError:
             logging.error("No card images found. Cannot send daily card.")
@@ -469,4 +469,3 @@ async def main():
 
 if __name__ == '__main__':
     asyncio.run(main())
-
