@@ -94,6 +94,19 @@ def reset_user_attempts():
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
 
+    # Сбрасываем только для пользователей с попытками <= MAX_ATTEMPTS и прошло 24 часа
+    cursor.execute("""
+        UPDATE users 
+        SET daily_count = 0, last_reset = ?
+        WHERE (daily_count <= ? OR daily_count IS NULL) AND (julianday(?) - julianday(last_reset)) >= 1
+    """, (datetime.datetime.now().isoformat(), MAX_ATTEMPTS, datetime.datetime.now().isoformat()))
+
+    conn.commit()
+    conn.close()
+
+# Maximum daily attempts
+MAX_ATTEMPTS = 5
+
 def load_card_descriptions(filename="card_descriptions.txt"):
     descriptions = {}
     if not os.path.exists(filename):
@@ -110,19 +123,6 @@ def load_card_descriptions(filename="card_descriptions.txt"):
 
 # Загрузка описаний карт при запуске
 card_descriptions = load_card_descriptions()
-  
-    # Сбрасываем только для пользователей с попытками <= MAX_ATTEMPTS и прошло 24 часа
-    cursor.execute("""
-        UPDATE users 
-        SET daily_count = 0, last_reset = ?
-        WHERE (daily_count <= ? OR daily_count IS NULL) AND (julianday(?) - julianday(last_reset)) >= 1
-    """, (datetime.datetime.now().isoformat(), MAX_ATTEMPTS, datetime.datetime.now().isoformat()))
-
-    conn.commit()
-    conn.close()
-
-# Maximum daily attempts
-MAX_ATTEMPTS = 5
 
 # Define keyboards
 main_menu = ReplyKeyboardMarkup(
