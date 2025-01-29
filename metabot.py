@@ -94,6 +94,23 @@ def reset_user_attempts():
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
 
+def load_card_descriptions(filename="card_descriptions.txt"):
+    descriptions = {}
+    if not os.path.exists(filename):
+        logging.warning(f"Файл {filename} не найден.")
+        return descriptions  # Возвращаем пустой словарь
+
+    with open(filename, "r", encoding="utf-8") as file:
+        for line in file:
+            parts = line.strip().split(":", 1)  # Разделяем по первому двоеточию
+            if len(parts) == 2:
+                card_name, description = parts
+                descriptions[card_name.strip()] = description.strip()
+    return descriptions
+
+# Загрузка описаний карт при запуске
+card_descriptions = load_card_descriptions()
+  
     # Сбрасываем только для пользователей с попытками <= MAX_ATTEMPTS и прошло 24 часа
     cursor.execute("""
         UPDATE users 
@@ -392,10 +409,12 @@ async def send_single_card(callback_query: types.CallbackQuery):
     try:
         card_image = get_random_card_images(1)[0]
         image_path = os.path.join(CARD_IMAGES_PATH, card_image)
+        description = card_descriptions.get(card_image, "Описание отсутствует.")  # Добавлено получение описания
+
         await bot.send_photo(
             user_id,
             photo=FSInputFile(image_path),
-            caption=f"\U0001F4C4 Ваша карта. Осталось попыток: {remaining_attempts}."
+            caption=f"\U0001F4C4 Ваша карта:\n\n{description}\n\nОсталось попыток: {remaining_attempts}."
         )
         mini_instruction = (
             "Внимательно посмотрите на карту, что вы на ней видите? Какой ответ вам приходит в голову? "
