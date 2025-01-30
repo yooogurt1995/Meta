@@ -417,8 +417,8 @@ async def send_single_card(callback_query: types.CallbackQuery):
             caption=f"\U0001F4C4 Ваша карта:\n\n{description}\n\nОсталось попыток: {remaining_attempts}."
         )
         mini_instruction = (
-            "Внимательно посмотрите на карту, что вы на ней видите? Какой ответ вам приходит в голову? "
-            "Не торопитесь, тщательно рассмотрите картинку и нужная вам мысль обязательно придет."
+            "Внимательно посмотрите на карту и подсказку, о чем вам это говорит? "
+            "Не торопитесь, тщательно рассмотрите картинку, вчитайтесь в подсказку и нужная вам мысль обязательно придет."
         )
         button = InlineKeyboardMarkup(
             inline_keyboard=[[InlineKeyboardButton(text="Я закончил работу с картой", callback_data="end_single_card")]]
