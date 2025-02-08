@@ -141,6 +141,13 @@ CARD_IMAGES_PATH = "./card_images"
 if not os.path.exists(CARD_IMAGES_PATH):
     os.makedirs(CARD_IMAGES_PATH)
 
+# Define path for daily card images
+DAILY_CARD_IMAGES_PATH = "./daily_card"
+
+# Ensure the directory exists
+if not os.path.exists(DAILY_CARD_IMAGES_PATH):
+    os.makedirs(DAILY_CARD_IMAGES_PATH)
+
 # Function to get random card images
 def get_random_card_images(count=1):
     images = [f for f in os.listdir(CARD_IMAGES_PATH) if os.path.isfile(os.path.join(CARD_IMAGES_PATH, f))]
@@ -159,15 +166,23 @@ async def send_daily_card():
     for user_id, username, first_name in users:
         try:
             display_name = first_name or username or "друг"  # Используйте first_name в первую очередь
-            card_image = get_random_card_images(1)[0]
-            image_path = os.path.join(CARD_IMAGES_PATH, card_image)
+
+            # Проверяем, есть ли файлы в папке daily_card
+            if not os.listdir(DAILY_CARD_IMAGES_PATH):
+                logging.error("Папка daily_card пуста. Невозможно отправить карту дня.")
+                continue  # Пропускаем итерацию, если нет карт
+
+            # Получаем случайное изображение из папки daily_card
+            card_image = random.choice(os.listdir(DAILY_CARD_IMAGES_PATH))
+            image_path = os.path.join(DAILY_CARD_IMAGES_PATH, card_image)
+
             await bot.send_photo(
                 user_id,
                 photo=FSInputFile(image_path),
                 caption=f"Доброе утро, {display_name}! Это твоя карта дня:"
             )
         except FileNotFoundError:
-            logging.error("No card images found. Cannot send daily card.")
+            logging.error("Файл изображения не найден.")
         except Exception as e:
             logging.error(f"Ошибка отправки карты пользователю {user_id}: {e}")
 
