@@ -124,6 +124,23 @@ def load_card_descriptions(filename="card_descriptions.txt"):
 # Загрузка описаний карт при запуске
 card_descriptions = load_card_descriptions()
 
+def load_daily_card_descriptions(filename="daily_card_descriptions.txt"):
+    descriptions = {}
+    if not os.path.exists(filename):
+        logging.warning(f"Файл {filename} не найден.")
+        return descriptions  # Возвращаем пустой словарь
+
+    with open(filename, "r", encoding="utf-8") as file:
+        for line in file:
+            parts = line.strip().split(":", 1)
+            if len(parts) == 2:
+                card_name, description = parts
+                descriptions[card_name.strip()] = description.strip()
+    return descriptions
+
+# Загружаем описания карт дня при запуске
+daily_card_descriptions = load_daily_card_descriptions()
+
 # Define keyboards
 main_menu = ReplyKeyboardMarkup(
     keyboard=[
@@ -165,21 +182,22 @@ async def send_daily_card():
 
     for user_id, username, first_name in users:
         try:
-            display_name = first_name or username or "друг"  # Используйте first_name в первую очередь
+            display_name = first_name or username or "друг"
 
-            # Проверяем, есть ли файлы в папке daily_card
             if not os.listdir(DAILY_CARD_IMAGES_PATH):
                 logging.error("Папка daily_card пуста. Невозможно отправить карту дня.")
-                continue  # Пропускаем итерацию, если нет карт
+                continue
 
-            # Получаем случайное изображение из папки daily_card
             card_image = random.choice(os.listdir(DAILY_CARD_IMAGES_PATH))
             image_path = os.path.join(DAILY_CARD_IMAGES_PATH, card_image)
+
+            # Получаем описание, если оно есть
+            description = daily_card_descriptions.get(card_image, "Описание отсутствует.")
 
             await bot.send_photo(
                 user_id,
                 photo=FSInputFile(image_path),
-                caption=f"Доброе утро, {display_name}! Это твоя карта дня:"
+                caption=f"Доброе утро, {display_name}! Это твоя карта дня:\n\n{description}"
             )
         except FileNotFoundError:
             logging.error("Файл изображения не найден.")
@@ -205,7 +223,16 @@ async def send_welcome(message: types.Message):
         "МАК карты - метафорические карты, с помощью которых ты можешь заглянуть в свое подсознание без психологов и других специалистов.\n"
         "Можешь достать любую информацию, принять важное решение или провести самокоучинг."
     )
+
+    # Отправка приветственного текста
     await message.answer(welcome_text, reply_markup=main_menu)
+
+    # Отправка видеосообщения (кружка)
+    video_path = "/Users/egor/Meta2/video.mp4"  # Указанный путь к видео
+    if os.path.exists(video_path):
+        await bot.send_video_note(message.chat.id, FSInputFile(video_path))
+    else:
+        logging.error(f"Видеофайл {video_path} не найден. Убедись, что он существует.")
 
 @router.message(Command(commands=['last_user']))
 async def get_last_user(message: types.Message):
